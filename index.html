@@ -114,7 +114,7 @@
           .padStart(2, "0");
         document.getElementById(
           `future-time-${countdownId}`
-        ).textContent = `Future date and time: ${year}-${month}-${day} ${futureHours}:${futureMinutes}:${futureSeconds}`;
+        ).textContent = `${year}-${month}-${day} ${futureHours}:${futureMinutes}:${futureSeconds}`;
 
         // Save future time to localStorage
         saveCountdowns();
