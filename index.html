@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Demo Countdown Timers</title>
+    <link rel="stylesheet" href="main.css" />
+  </head>
+  <body>
+    <h1>Demo Countdown Timers</h1>
+
+    <label for="main-title">Enter Countdown Title:</label>
+    <input
+      type="text"
+      id="main-title"
+      class="title-input"
+      placeholder="Enter title"
+    />
+    <button onclick="addCountdown()">Add Countdown</button>
+
+    <div id="countdown-list"></div>
+
+    <script>
+      let countdownCount = 0; // To track the number of countdowns
+      let countdownIntervals = {}; // Store each countdown's interval ID
+
+      document.addEventListener("DOMContentLoaded", loadCountdowns);
+
+      function addCountdown() {
+        const mainTitle = document.getElementById("main-title").value.trim();
+        if (!mainTitle) {
+          alert("Please enter a title for the countdown");
+          return;
+        }
+
+        countdownCount++; // Increment the countdown count
+        createCountdownElement(mainTitle, countdownCount, 0, 0, 0);
+        saveCountdowns(); // Save after adding new countdown
+        document.getElementById("main-title").value = ""; // Clear the main title input field
+      }
+
+      function createCountdownElement(
+        title,
+        id,
+        hours,
+        minutes,
+        seconds,
+        futureTime = null
+      ) {
+        const countdownContainer = document.createElement("div");
+        countdownContainer.classList.add("countdown-container");
+        countdownContainer.setAttribute("id", `countdown-container-${id}`);
+
+        countdownContainer.innerHTML = `
+                <div>
+                    <label for="title-${id}">Title:</label>
+                    <input type="text" id="title-${id}" class="title-input" value="${title}" oninput="saveCountdowns()" />
+                </div>
+                <span class="time-label">Hours</span>
+                <input type="number" id="hours-${id}" class="time-input" min="0" max="23" placeholder="HH" value="${hours}" oninput="saveCountdowns()">
+                <span class="time-label">Minutes</span>
+                <input type="number" id="minutes-${id}" class="time-input" min="0" max="59" placeholder="MM" value="${minutes}" oninput="saveCountdowns()">
+                <span class="time-label">Seconds</span>
+                <input type="number" id="seconds-${id}" class="time-input" min="0" max="59" placeholder="SS" value="${seconds}" oninput="saveCountdowns()">
+                <button onclick="startCountdown(${id})">Start</button>
+                <button class="remove-button" onclick="removeCountdown(${id})">Remove</button>
+                <p id="future-time-${id}" class="result"></p>
+                <p id="countdown-${id}" class="countdown"></p>
+            `;
+
+        document
+          .getElementById("countdown-list")
+          .appendChild(countdownContainer);
+
+        if (futureTime) {
+          startCountdown(id, new Date(futureTime));
+        }
+      }
+
+      function startCountdown(countdownId, futureTime = null) {
+        // Clear any previous countdown interval
+        clearInterval(countdownIntervals[countdownId]);
+
+        // If futureTime is not provided, calculate based on inputs
+        if (!futureTime) {
+          const hours =
+            document.getElementById(`hours-${countdownId}`).value || 0;
+          const minutes =
+            document.getElementById(`minutes-${countdownId}`).value || 0;
+          const seconds =
+            document.getElementById(`seconds-${countdownId}`).value || 0;
+
+          const futureMilliseconds =
+            (parseInt(hours) * 3600 +
+              parseInt(minutes) * 60 +
+              parseInt(seconds)) *
+            1000;
+          const now = new Date();
+          futureTime = new Date(now.getTime() + futureMilliseconds);
+        }
+
+        // Display future date and time
+        const year = futureTime.getFullYear();
+        const month = (futureTime.getMonth() + 1).toString().padStart(2, "0");
+        const day = futureTime.getDate().toString().padStart(2, "0");
+        const futureHours = futureTime.getHours().toString().padStart(2, "0");
+        const futureMinutes = futureTime
+          .getMinutes()
+          .toString()
+          .padStart(2, "0");
+        const futureSeconds = futureTime
+          .getSeconds()
+          .toString()
+          .padStart(2, "0");
+        document.getElementById(
+          `future-time-${countdownId}`
+        ).textContent = `Future date and time: ${year}-${month}-${day} ${futureHours}:${futureMinutes}:${futureSeconds}`;
+
+        // Save future time to localStorage
+        saveCountdowns();
+
+        // Start the countdown
+        countdownIntervals[countdownId] = setInterval(function () {
+          const now = new Date();
+          const remainingTime = futureTime.getTime() - now.getTime();
+
+          if (remainingTime <= 0) {
+            document.getElementById(
+              `countdown-${countdownId}`
+            ).textContent = `Countdown finished!`;
+            clearInterval(countdownIntervals[countdownId]);
+            return;
+          }
+
+          const hoursLeft = Math.floor((remainingTime / (1000 * 60 * 60)) % 24);
+          const minutesLeft = Math.floor((remainingTime / (1000 * 60)) % 60);
+          const secondsLeft = Math.floor((remainingTime / 1000) % 60);
+
+          document.getElementById(
+            `countdown-${countdownId}`
+          ).textContent = `${hoursLeft
+            .toString()
+            .padStart(2, "0")}:${minutesLeft
+            .toString()
+            .padStart(2, "0")}:${secondsLeft.toString().padStart(2, "0")}`;
+        }, 100);
+      }
+
+      function removeCountdown(countdownId) {
+        // Clear the countdown interval and remove the countdown element
+        clearInterval(countdownIntervals[countdownId]);
+        document.getElementById(`countdown-container-${countdownId}`).remove();
+        saveCountdowns(); // Save after removing countdown
+      }
+
+      function saveCountdowns() {
+        const countdowns = [];
+        for (let i = 1; i <= countdownCount; i++) {
+          const container = document.getElementById(`countdown-container-${i}`);
+          if (container) {
+            const title = document.getElementById(`title-${i}`).value;
+            const hours = document.getElementById(`hours-${i}`).value || 0;
+            const minutes = document.getElementById(`minutes-${i}`).value || 0;
+            const seconds = document.getElementById(`seconds-${i}`).value || 0;
+            const futureTimeText = document.getElementById(
+              `future-time-${i}`
+            ).textContent;
+            const futureTime = futureTimeText
+              ? futureTimeText.split(": ")[1]
+              : null;
+
+            countdowns.push({
+              id: i,
+              title,
+              hours,
+              minutes,
+              seconds,
+              futureTime,
+            });
+          }
+        }
+        localStorage.setItem("countdowns", JSON.stringify(countdowns));
+      }
+
+      function loadCountdowns() {
+        const savedCountdowns = JSON.parse(localStorage.getItem("countdowns"));
+        if (savedCountdowns) {
+          savedCountdowns.forEach((countdown) => {
+            countdownCount = Math.max(countdownCount, countdown.id);
+            createCountdownElement(
+              countdown.title,
+              countdown.id,
+              countdown.hours,
+              countdown.minutes,
+              countdown.seconds,
+              countdown.futureTime ? new Date(countdown.futureTime) : null
+            );
+          });
+        }
+      }
+    </script>
+  </body>
+</html>
