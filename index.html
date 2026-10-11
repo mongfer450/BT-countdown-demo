@@ -3,72 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Space Drop Calculator</title>
-    <link
-      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
+    <title>Forest Queen</title>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div class="container">
-      <h1 style="text-align: center; margin-top: 20px">
-        Space Drop Time Calculator
-      </h1>
-      <form id="spaceForm">
-        <label for="rarity">Rarity:</label>
-        <select id="rarity" name="rarity">
-          <option value="Rare">Rare</option>
-          <option value="Epic">Epic</option>
-          <option value="Legend">Legend</option>
-          <option value="Mythic">Mythic</option>
-          <option value="Exalt">Exalt</option>
-        </select>
-
-        <label for="size">Size:</label>
-        <select id="size" name="size">
-          <option value="Small">Small</option>
-          <option value="Medium">Medium</option>
-          <option value="Large">Large</option>
-        </select>
-
-        <label for="spaceId">Space ID:</label>
-        <input type="text" id="spaceId" name="spaceId" />
-
-        <label for="cycles">Cycles:</label>
-        <input
-          type="number"
-          id="cycles"
-          name="cycles"
-          min="1"
-          placeholder="จำนวน loops ที่จะคำนวณ"
-        />
-
-        <label for="dropTime">Spawn Interval (hh):</label>
-        <input
-          type="number"
-          id="dropTime"
-          name="dropTime"
-          min="1"
-          placeholder="Ex: 72 (ระยะเวลาดรอป)"
-        />
-
-        <label for="chgSpawnTime">Next Pick-up Time (hh:mm):</label>
-        <input
-          type="text"
-          id="chgSpawnTime"
-          name="chgSpawnTime"
-          placeholder="Ex: 9:30 (ก๊อปเวลาวางได้เลย)"
-        />
-
-        <button type="button" onclick="createTimeCal()">Calculate</button>
-      </form>
-
-      <div id="results"></div>
-    </div>
-
-    <footer>Build by MONGFER</footer>
-
-    <script src="script.js"></script>
+    <main>
+      <h1>The Forest Queen</h1>
+      <video src="queen-walk.mp4" poster="queen.png" autoplay muted loop playsinline controls></video>
+    </main>
   </body>
 </html>
