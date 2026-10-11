@@ -1,15 +1,17 @@
 # Village Life — pixel art
 
-A 10-second pixel-art video (1280×720, 24fps, chiptune soundtrack) of a medieval
-village where five peasants go about their day:
+A 10-second pixel-art video (1920×1080, 24fps, chiptune soundtrack) of a medieval
+village, seen from a top-down 3/4 camera that slowly pans across the workyard.
+Five peasants go about their day:
 
 1. **Farmer** hoeing the crop field
 2. **Woodcutter** chopping logs at the block
 3. **Blacksmith** hammering at the anvil, sparks flying
 4. **Maiden** carrying a bucket of water along the path
-5. **Child** chasing a chicken around the well
+5. **Child** chasing a chicken around the big tree
 
-Everything is drawn in code at 320×180 and scaled up 4× with nearest-neighbour.
+Everything is drawn in code: the world is 640×330 pixels, the camera shows 480×270,
+and each frame is scaled up 4× with nearest-neighbour.
 
 ## Rebuild
 

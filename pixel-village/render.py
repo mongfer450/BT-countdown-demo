@@ -1,6 +1,7 @@
-"""Render a pixel-art medieval village scene: 5 peasants going about their day.
+"""Render a top-down (3/4 view) pixel-art medieval village: 5 peasants at work.
 
-Draws each frame at 320x180, then scales 4x (nearest neighbour) to 1280x720.
+The world is drawn at 640x330 pixels; a 480x270 camera pans across it and each
+frame is scaled 4x (nearest neighbour) to 1920x1080.
 Usage: python3 render.py <frames_dir>
 """
 import math
@@ -8,392 +9,722 @@ import os
 import random
 import sys
 
-from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-W, H, SCALE = 320, 180, 4
+WW, WH = 640, 330          # world size
+VW, VH, SCALE = 480, 270, 4
 FPS, DUR = 24, 10
 N = FPS * DUR
 
-SKY = [(92, 156, 228), (116, 176, 238), (146, 198, 246), (182, 220, 250)]
-SUN = (255, 236, 130)
-HILL_FAR, HILL_NEAR = (98, 146, 110), (76, 130, 80)
-GRASS, GRASS_D, GRASS_L = (100, 170, 74), (78, 144, 60), (132, 194, 92)
-DIRT, DIRT_D = (178, 136, 88), (146, 106, 66)
-SOIL, SOIL_D, CROP = (120, 82, 52), (96, 64, 40), (90, 178, 70)
-PLASTER, TIMBER = (234, 216, 174), (102, 64, 38)
-THATCH, THATCH_D = (216, 172, 74), (176, 134, 52)
-STONE, STONE_D = (152, 152, 164), (112, 112, 128)
-WOOD, WOOD_D = (140, 92, 52), (102, 66, 38)
-IRON, IRON_D = (170, 176, 186), (70, 72, 82)
-SKIN, EYE = (242, 194, 150), (40, 30, 30)
-WHITE, BLACK = (250, 250, 240), (24, 20, 24)
-FIRE = [(255, 220, 90), (255, 160, 50), (230, 90, 40)]
+OUT = (34, 26, 24)
+GRASS = [(74, 100, 36), (94, 122, 44), (116, 144, 54), (142, 166, 68)]
+DIRT = [(108, 74, 44), (136, 96, 58), (162, 120, 74), (184, 142, 90)]
+STONE = [(86, 84, 80), (126, 120, 108), (164, 156, 136), (200, 192, 166)]
+WALL = [(126, 108, 80), (170, 150, 108), (206, 188, 140), (226, 212, 168)]
+WOOD = [(72, 46, 28), (106, 70, 40), (142, 96, 54), (178, 130, 74)]
+PLASTER = [(196, 178, 140), (226, 212, 174)]
+SLATE = [(36, 56, 62), (52, 80, 86), (70, 104, 108), (94, 132, 132)]
+LEAF = [(36, 66, 30), (54, 92, 38), (76, 122, 46), (108, 152, 62)]
+SKIN = [(228, 170, 126), (196, 136, 98)]
+IRON = [(64, 66, 76), (104, 108, 120), (160, 166, 178), (210, 214, 222)]
+FIRE = [(255, 236, 140), (255, 176, 60), (232, 100, 36)]
+WATER = [(34, 70, 84), (54, 104, 120), (120, 170, 180)]
+BAYER = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]) / 16
 
 
 def ease(p):
+    p = min(1, max(0, p))
     return p * p * (3 - 2 * p)
 
 
-# ---------------------------------------------------------------- background
-def tree(d, x, y):
-    d.rectangle([x - 1, y - 10, x + 1, y], fill=WOOD_D)
-    for cx, cy, r, col in [(x, y - 16, 7, (58, 118, 56)), (x - 5, y - 12, 5, (58, 118, 56)),
-                           (x + 5, y - 12, 5, (58, 118, 56)), (x - 1, y - 18, 4, (84, 146, 68)),
-                           (x + 3, y - 14, 3, (84, 146, 68))]:
-        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
+def noise(w, h, cells, seed):
+    rng = np.random.default_rng(seed)
+    small = Image.fromarray((rng.random((cells[1], cells[0])) * 255).astype(np.uint8))
+    return np.asarray(small.resize((w, h), Image.BICUBIC), dtype=float) / 255
 
 
-def house(d, x, base, w, hw, rh, chimney_dx):
-    top = base - hw
-    d.rectangle([x + chimney_dx, top - rh + 2, x + chimney_dx + 4, top - 2], fill=STONE_D)
-    d.rectangle([x, top, x + w, base], fill=PLASTER)
-    d.rectangle([x, top, x + w, base], outline=TIMBER)
-    d.line([x, top + hw // 2, x + w, top + hw // 2], fill=TIMBER)
-    for bx in range(x + 8, x + w - 4, 10):
-        d.line([bx, top, bx, base], fill=TIMBER)
-        d.line([bx - 8, top + hw // 2, bx, top], fill=TIMBER)
-    d.polygon([(x - 4, top + 1), (x + w + 4, top + 1), (x + w // 2, top - rh)], fill=THATCH)
-    for i in range(2, rh, 3):
-        half = (w // 2 + 4) * i // rh
-        d.line([x + w // 2 - half, top - rh + i, x + w // 2 + half, top - rh + i], fill=THATCH_D)
-    dx = x + w // 2 - 3
-    d.rectangle([dx, base - 9, dx + 6, base], fill=WOOD_D)
-    d.point((dx + 5, base - 4), fill=IRON)
-    for wx in (x + 4, x + w - 10):
-        d.rectangle([wx, top + 3, wx + 5, top + 7], fill=(70, 54, 44))
-        d.line([wx + 2, top + 3, wx + 2, top + 7], fill=TIMBER)
-    return (x + chimney_dx + 2, top - rh + 1)
+def dither(field, palette):
+    """Map a 0..1 field onto a palette with ordered (Bayer) dithering."""
+    h, w = field.shape
+    th = np.tile(BAYER, (h // 4 + 1, w // 4 + 1))[:h, :w]
+    idx = np.clip((field * len(palette) + th - 0.5).astype(int), 0, len(palette) - 1)
+    return np.array(palette, dtype=np.uint8)[idx]
 
 
-def background():
-    rnd = random.Random(7)
-    img = Image.new("RGB", (W, H))
-    px = img.load()
-    for y in range(H):
-        for x in range(W):
-            b = min(len(SKY) - 1, (y + ((x + y) % 2) * 3) // 24)
-            px[x, y] = SKY[b]
+def layer(w=WW, h=WH):
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    return img, ImageDraw.Draw(img)
+
+
+def outlined(img, color=OUT):
+    a = img.getchannel("A").point(lambda v: 255 if v else 0)
+    grown = a.filter(ImageFilter.MaxFilter(3))
+    out = Image.new("RGBA", img.size, color + (255,))
+    out.putalpha(grown)
+    out.alpha_composite(img)
+    return out
+
+
+def shadow(world, box, alpha=70):
+    lay, d = layer(world.width, world.height)
+    d.ellipse(box, fill=(20, 30, 14, alpha))
+    world.alpha_composite(lay)
+
+
+# ------------------------------------------------------------------ ground
+def ground():
+    g = noise(WW, WH, (22, 12), 1) * 0.75 + noise(WW, WH, (80, 42), 2) * 0.25
+    img = Image.fromarray(dither(g * 0.9 + 0.05, GRASS)).convert("RGBA")
+
+    # roads: an L/T shaped dirt track with organic edges
+    mask = Image.new("L", (WW, WH), 0)
+    md = ImageDraw.Draw(mask)
+    md.rectangle([140, 0, 166, WH], fill=255)
+    md.rectangle([140, 205, WW, 230], fill=255)
+    md.ellipse([128, 192, 180, 244], fill=255)
+    # worn yard ground around the house and the workyard
+    md.ellipse([240, 180, 380, 240], fill=255)
+    md.ellipse([186, 236, 330, 312], fill=200)
+    md.ellipse([400, 160, 540, 230], fill=255)
+    md.ellipse([440, 232, 600, 312], fill=180)
+    m = np.asarray(mask.filter(ImageFilter.GaussianBlur(3)), dtype=float) / 255
+    m = m + (noise(WW, WH, (90, 50), 3) - 0.5) * 0.5
+    road = m > 0.5
+    edge = road & ~(np.asarray(Image.fromarray((road * 255).astype(np.uint8))
+                               .filter(ImageFilter.MinFilter(3))) > 0)
+    dirt = dither(noise(WW, WH, (60, 30), 4) * 0.7 + 0.25, DIRT)
+    arr = np.asarray(img).copy()
+    arr[road, :3] = dirt[road]
+    arr[edge, :3] = DIRT[0]
+    img = Image.fromarray(arr)
     d = ImageDraw.Draw(img)
-    d.ellipse([34, 14, 50, 30], fill=SUN)
-    d.ellipse([30, 10, 54, 34], outline=(255, 246, 190))
 
-    for x in range(W):
-        h = int(80 + 6 * math.sin(x / 23) + 4 * math.sin(x / 9 + 1))
-        d.line([x, h, x, 110], fill=HILL_FAR)
-    # castle on the far hill
-    cs, cd = (168, 168, 182), (130, 130, 148)
-    d.rectangle([242, 58, 278, 78], fill=cs)
-    d.rectangle([254, 44, 266, 58], fill=cs)
-    for tx in (238, 274):
-        d.rectangle([tx, 50, tx + 8, 78], fill=cd)
-        for cx in range(tx, tx + 9, 3):
-            d.rectangle([cx, 48, cx + 1, 49], fill=cd)
-    for cx in range(242, 279, 3):
-        d.rectangle([cx, 56, cx + 1, 57], fill=cs)
-    for cx in range(254, 267, 3):
-        d.rectangle([cx, 42, cx + 1, 43], fill=cs)
-    d.rectangle([258, 70, 262, 78], fill=(60, 50, 50))
-    for wx, wy in [(241, 58), (277, 58), (259, 49), (248, 64), (270, 64)]:
-        d.rectangle([wx, wy, wx + 1, wy + 2], fill=(60, 60, 80))
-    d.line([260, 34, 260, 42], fill=WOOD_D)
-
-    for x in range(W):
-        h = int(94 + 5 * math.sin(x / 31 + 2) + 3 * math.sin(x / 13))
-        d.line([x, h, x, 110], fill=HILL_NEAR)
-
-    d.rectangle([0, 104, W, H], fill=GRASS)
-    for _ in range(700):
-        x, y = rnd.randrange(W), rnd.randrange(104, H)
-        d.point((x, y), fill=rnd.choice([GRASS_D, GRASS_D, GRASS_L]))
-    # dirt path
-    for x in range(W):
-        top = 136 + int(1.2 * math.sin(x / 7))
-        d.line([x, top, x, 147 + int(1.2 * math.sin(x / 9 + 2))], fill=DIRT)
-    for _ in range(140):
-        d.point((rnd.randrange(W), rnd.randrange(138, 146)), fill=DIRT_D)
-    # ploughed field
-    d.rectangle([8, 152, 112, 176], fill=SOIL)
-    for ry in range(154, 176, 4):
-        d.line([10, ry, 110, ry], fill=SOIL_D)
-        for cx in range(12, 110, 5):
-            if cx < 70 or ry > 165:
-                d.point((cx, ry - 1), fill=CROP)
-                d.point((cx + 1, ry - 2), fill=CROP)
-    d.rectangle([8, 152, 112, 176], outline=WOOD_D)
-
-    tree(d, 96, 112)
-    tree(d, 306, 114)
-    tree(d, 6, 118)
-    chimneys = [house(d, 18, 114, 44, 20, 16, 30), house(d, 116, 114, 36, 18, 14, 6)]
-
-    # forge shed
-    d.rectangle([222, 102, 294, 126], fill=STONE_D)
-    for by in range(104, 126, 4):
-        for bx in range(222 + (by % 8), 294, 8):
-            d.line([bx, by, bx + 5, by], fill=STONE)
-    d.polygon([(216, 104), (300, 104), (290, 92), (226, 92)], fill=WOOD)
-    for rx in range(228, 290, 6):
-        d.line([rx, 93, rx - 2, 103], fill=WOOD_D)
-    for postx in (220, 296):
-        d.rectangle([postx - 1, 104, postx + 1, 128], fill=WOOD_D)
-    d.rectangle([228, 112, 244, 126], fill=STONE)          # hearth
-    d.rectangle([232, 82, 238, 112], fill=STONE)           # forge chimney
-    d.rectangle([258, 124, 260, 130], fill=WOOD_D)         # anvil stump
-    d.rectangle([254, 120, 266, 123], fill=IRON_D)         # anvil
-    d.rectangle([252, 120, 254, 121], fill=IRON_D)
-    chimneys.append((235, 80))
-
-    # woodpile and chopping block
-    for i, (lx, ly) in enumerate([(176, 132), (182, 132), (179, 128)]):
-        d.ellipse([lx - 3, ly - 3, lx + 3, ly + 3], fill=WOOD)
-        d.ellipse([lx - 1, ly - 1, lx + 1, ly + 1], fill=(200, 160, 100))
-    d.rectangle([203, 129, 209, 135], fill=WOOD)
-    d.line([203, 129, 209, 129], fill=(200, 160, 100))
-    return img, chimneys
+    rnd = random.Random(5)
+    # wheel ruts
+    for ry in (212, 223):
+        for x in range(170, WW):
+            d.point((x, ry + round(math.sin(x / 17) * 1.2)), fill=DIRT[0])
+    for ry in (147, 159):
+        for y in range(0, 196):
+            d.point((ry + round(math.sin(y / 15) * 1.2), y), fill=DIRT[0])
+    # pebbles
+    for _ in range(120):
+        x, y = rnd.randrange(WW), rnd.randrange(WH)
+        if road[y, x]:
+            d.point((x, y), fill=STONE[2])
+            d.point((x, y + 1), fill=STONE[0])
+    # grass tufts and flowers
+    for _ in range(900):
+        x, y = rnd.randrange(2, WW - 2), rnd.randrange(3, WH)
+        if road[y, x] or road[y - 2, x]:
+            continue
+        d.point((x - 1, y - 1), fill=GRASS[3])
+        d.point((x, y - 2), fill=GRASS[3])
+        d.point((x + 1, y - 1), fill=GRASS[2])
+        d.point((x, y), fill=GRASS[0])
+    for _ in range(90):
+        x, y = rnd.randrange(WW), rnd.randrange(WH)
+        if not road[y, x]:
+            d.point((x, y), fill=rnd.choice([(240, 236, 200), (248, 214, 90), (220, 120, 140)]))
+    return img
 
 
-# ---------------------------------------------------------------- sprites
-def peasant(d, x, y, look, facing=1, walk=None, arm=80, tool=None, small=False):
-    leg_h, body_h = (2, 4) if small else (3, 6)
-    if walk is None:
-        offs = (0, 0)
-    else:
-        a = math.sin(walk * 2 * math.pi)
-        offs = (round(a * 1.4), round(-a * 1.4))
-    btop = y - leg_h - body_h
+# ------------------------------------------------------------------ props
+def wall_h(world, x0, x1, y):
+    lay, d = layer()
+    d.rectangle([x0, y - 1, x1 - 1, y + 9], fill=WALL[0])
+    for x in range(x0, x1, 10):
+        j = (x // 10) % 2
+        d.rectangle([x, y - j, x + 9, y + 3 - j], fill=WALL[3])
+        d.rectangle([x, y + 4 - j, x + 9, y + 9], fill=WALL[1])
+        d.line([x + 1, y + 4 - j, x + 8, y + 4 - j], fill=WALL[2])
+        d.rectangle([x, y - j, x + 9, y + 9], outline=OUT)
+    world.alpha_composite(lay)
+
+
+def wall_v(world, x, y0, y1):
+    lay, d = layer()
+    d.rectangle([x, y0, x + 10, y1 + 2], fill=WALL[0])
+    for y in range(y0, y1, 7):
+        j = (y // 7) % 2
+        d.rectangle([x + j, y, x + 9 + j, y + 4], fill=WALL[3])
+        d.rectangle([x + j, y + 5, x + 9 + j, y + 9], fill=WALL[1])
+        d.rectangle([x + j, y, x + 9 + j, y + 9], outline=OUT)
+    world.alpha_composite(lay)
+
+
+def house(world):
+    shadow(world, [256, 160, 384, 206], 80)
+    lay, d = layer()
+    # roof slopes: ridge runs away from the camera
+    A, B, L1, L2, R1, R2 = (310, 100), (310, 38), (250, 146), (250, 84), (370, 146), (370, 84)
+    for poly, base in [((A, B, L2, L1), 3), ((A, B, R2, R1), 1)]:
+        sl, sd = layer()
+        sd.rectangle([0, 0, WW, WH], fill=SLATE[base])
+        for k, cx in enumerate(range(252, 370, 6)):
+            sd.line([cx, 0, cx, WH], fill=SLATE[0])
+            for cy in range(30 + (k % 2) * 3, 150, 6):
+                sd.line([cx + 1, cy, cx + 5, cy], fill=SLATE[max(0, base - 1)])
+                sd.point((cx + 2, cy + 1), fill=SLATE[min(3, base + 1) if base == 3 else 2])
+        pm = Image.new("L", (WW, WH), 0)
+        ImageDraw.Draw(pm).polygon(poly, fill=255)
+        lay.paste(sl, (0, 0), pm)
+    # chimney
+    d.rectangle([336, 26, 352, 72], fill=STONE[2])
+    for cy in range(30, 72, 5):
+        d.line([336, cy, 352, cy], fill=STONE[1])
+        for cx in range(338 + (cy // 5 % 2) * 3, 352, 6):
+            d.point((cx, cy - 2), fill=STONE[1])
+    d.rectangle([346, 26, 352, 72], fill=STONE[1])
+    d.rectangle([334, 22, 354, 27], fill=STONE[3])
+    d.rectangle([339, 23, 349, 26], fill=OUT)
+    # gable front
+    d.polygon([(262, 146), (310, 108), (358, 146)], fill=PLASTER[1])
+    d.line([310, 108, 310, 146], fill=WOOD[1], width=2)
+    d.line([272, 146, 310, 118], fill=WOOD[1], width=2)
+    d.line([348, 146, 310, 118], fill=WOOD[1], width=2)
+    d.rectangle([304, 124, 316, 134], fill=WOOD[0])
+    d.rectangle([306, 126, 314, 132], fill=(60, 50, 70))
+    d.line([A, L1], fill=WOOD[2], width=4)
+    d.line([A, R1], fill=WOOD[1], width=4)
+    d.line([A[0], A[1] - 1, L1[0], L1[1] - 1], fill=WOOD[3])
+    # facade
+    d.rectangle([262, 146, 358, 190], fill=PLASTER[1])
+    d.rectangle([262, 146, 266, 190], fill=WOOD[1])
+    d.rectangle([354, 146, 358, 190], fill=WOOD[1])
+    d.rectangle([262, 146, 358, 149], fill=WOOD[2])
+    d.rectangle([262, 166, 358, 168], fill=WOOD[1])
+    for bx in (284, 336):
+        d.line([bx, 149, bx, 182], fill=WOOD[1], width=2)
+    d.line([266, 166, 284, 150], fill=WOOD[1], width=2)
+    d.line([354, 166, 336, 150], fill=WOOD[1], width=2)
+    for x in range(262, 359, 8):
+        d.rectangle([x, 182, x + 7, 190], fill=STONE[2], outline=STONE[0])
+    # door with arch, hinges and ring
+    d.rectangle([298, 158, 322, 190], fill=WOOD[0])
+    d.pieslice([298, 150, 322, 168], 180, 360, fill=WOOD[0])
+    d.rectangle([301, 160, 319, 190], fill=WOOD[2])
+    d.pieslice([301, 153, 319, 167], 180, 360, fill=WOOD[2])
+    for px in (305, 310, 315):
+        d.line([px, 158, px, 190], fill=WOOD[1])
+    for hy in (166, 180):
+        d.line([301, hy, 309, hy], fill=IRON[0], width=2)
+    d.ellipse([313, 172, 317, 176], outline=IRON[1])
+    # windows with shutters
+    for wx in (270, 340):
+        d.rectangle([wx - 3, 154, wx, 166], fill=SLATE[2])
+        d.rectangle([wx + 11, 154, wx + 14, 166], fill=SLATE[2])
+        d.rectangle([wx, 154, wx + 11, 166], fill=(48, 44, 56))
+        d.line([wx + 5, 154, wx + 5, 166], fill=WOOD[1])
+        d.line([wx, 160, wx + 11, 160], fill=WOOD[1])
+        d.point((wx + 2, 156), fill=(200, 210, 220))
+        d.rectangle([wx - 1, 167, wx + 12, 169], fill=WOOD[2])
+        for fx in range(wx, wx + 12, 3):
+            d.point((fx, 166), fill=(220, 90, 90) if fx % 2 else (240, 220, 120))
+    # steps
+    d.rectangle([294, 190, 326, 196], fill=STONE[3])
+    d.rectangle([294, 194, 326, 197], fill=STONE[1])
+    d.rectangle([290, 197, 330, 203], fill=STONE[2])
+    d.rectangle([290, 201, 330, 204], fill=STONE[0])
+    world.alpha_composite(outlined(lay))
+
+
+def barrel(d, x, y):
+    d.rectangle([x - 6, y - 14, x + 6, y], fill=WOOD[2])
+    d.rectangle([x + 2, y - 14, x + 6, y], fill=WOOD[1])
+    d.rectangle([x - 6, y - 12, x + 6, y - 11], fill=IRON[1])
+    d.rectangle([x - 6, y - 4, x + 6, y - 3], fill=IRON[1])
+    d.ellipse([x - 6, y - 18, x + 6, y - 11], fill=WOOD[3])
+    d.ellipse([x - 4, y - 17, x + 4, y - 12], fill=WOOD[2])
+
+
+def crate(d, x, y):
+    d.rectangle([x - 8, y - 14, x + 8, y - 9], fill=WOOD[3])
+    d.rectangle([x - 8, y - 9, x + 8, y], fill=WOOD[2])
+    d.line([x - 8, y - 9, x + 8, y], fill=WOOD[1], width=2)
+    d.rectangle([x - 8, y - 9, x + 8, y], outline=WOOD[1])
+
+
+def woodpile(world):
+    shadow(world, [196, 270, 256, 292])
+    lay, d = layer()
+    d.rectangle([194, 246, 248, 286], fill=WOOD[1])
+    for row in range(4):
+        for col in range(6):
+            cx, cy = 199 + col * 9 + (row % 2) * 4, 252 + row * 9
+            if cx > 244:
+                continue
+            d.ellipse([cx - 5, cy - 5, cx + 4, cy + 4], fill=WOOD[1])
+            d.ellipse([cx - 4, cy - 4, cx + 3, cy + 3], fill=WOOD[3])
+            d.ellipse([cx - 2, cy - 2, cx + 1, cy + 1], outline=WOOD[2])
+    for px in (194, 248):
+        d.rectangle([px - 1, 240, px + 2, 288], fill=WOOD[2])
+    world.alpha_composite(outlined(lay))
+
+
+def stump(d, x, y, w=8):
+    d.rectangle([x - w, y - 4, x + w, y + 4], fill=WOOD[1])
+    d.rectangle([x + w // 2, y - 4, x + w, y + 4], fill=WOOD[0])
+    d.ellipse([x - w, y - 8, x + w, y], fill=WOOD[3])
+    d.ellipse([x - w + 3, y - 6, x + w - 3, y - 2], outline=WOOD[2])
+
+
+def furnace(world):
+    shadow(world, [462, 158, 528, 186], 90)
+    lay, d = layer()
+    cx, top, base = 490, 112, 174
+    for y in range(top, base):
+        hw = round(8 + (y - top) / (base - top) * 14)
+        row = (y - top) // 5
+        for x in range(cx - hw, cx + hw + 1):
+            rel = (x - cx) / max(1, hw)
+            shade = 3 if rel < -0.5 else 2 if rel < 0.3 else 1
+            col = STONE[shade]
+            if (y - top) % 5 == 0 or (x - cx + row * 3) % 8 == 0:
+                col = STONE[max(0, shade - 1)]
+            d.point((x, y), fill=col)
+    d.ellipse([cx - 10, top - 4, cx + 10, top + 4], fill=STONE[3])
+    d.ellipse([cx - 6, top - 2, cx + 6, top + 2], fill=OUT)
+    d.rectangle([cx - 8, 156, cx + 8, base], fill=(40, 20, 16))
+    d.pieslice([cx - 8, 150, cx + 8, 162], 180, 360, fill=(40, 20, 16))
+    world.alpha_composite(outlined(lay))
+
+
+def anvil(world):
+    shadow(world, [424, 188, 452, 198])
+    lay, d = layer()
+    stump(d, 437, 192, 7)
+    d.rectangle([430, 178, 446, 182], fill=IRON[2])
+    d.rectangle([432, 182, 444, 186], fill=IRON[0])
+    d.polygon([(430, 178), (423, 179), (430, 182)], fill=IRON[2])
+    d.line([431, 178, 445, 178], fill=IRON[3])
+    barrel(d, 456, 196)
+    d.ellipse([451, 180, 461, 185], fill=WATER[1])
+    world.alpha_composite(outlined(lay))
+
+
+def well(world):
+    shadow(world, [574, 258, 622, 282], 80)
+    lay, d = layer()
+    cx, cy = 596, 262
+    d.ellipse([cx - 17, cy - 8, cx + 17, cy + 14], fill=STONE[1])
+    d.rectangle([cx - 17, cy + 2, cx + 17, cy + 6], fill=STONE[1])
+    d.ellipse([cx - 17, cy - 12, cx + 17, cy + 8], fill=STONE[3])
+    for a in range(0, 360, 30):
+        r = math.radians(a)
+        d.point((cx + round(15 * math.cos(r)), cy - 2 + round(9 * math.sin(r))), fill=STONE[1])
+    d.ellipse([cx - 11, cy - 8, cx + 11, cy + 4], fill=WATER[0])
+    d.ellipse([cx - 9, cy - 6, cx + 7, cy + 2], fill=WATER[1])
+    d.line([cx - 5, cy - 4, cx - 1, cy - 4], fill=WATER[2])
+    for px in (cx - 19, cx + 17):
+        d.rectangle([px, cy - 30, px + 2, cy + 6], fill=WOOD[2])
+    d.rectangle([cx - 21, cy - 32, cx + 21, cy - 29], fill=WOOD[3])
+    d.line([cx, cy - 29, cx, cy - 14], fill=(206, 190, 150))
+    d.rectangle([cx - 3, cy - 14, cx + 3, cy - 9], fill=WOOD[2])
+    world.alpha_composite(outlined(lay))
+
+
+def stonepile(world):
+    shadow(world, [516, 286, 568, 306])
+    lay, d = layer()
+    d.rectangle([518, 288, 564, 300], fill=WOOD[2])
+    for x in range(518, 564, 8):
+        d.line([x, 288, x, 300], fill=WOOD[1])
+    rnd = random.Random(9)
+    for _ in range(14):
+        x, y = rnd.randrange(522, 558), rnd.randrange(274, 292)
+        r = rnd.randrange(4, 7)
+        d.ellipse([x - r, y - r + 1, x + r, y + r], fill=STONE[0], outline=OUT)
+        d.ellipse([x - r + 1, y - r + 1, x + r - 2, y + r - 3], fill=STONE[1])
+        d.ellipse([x - r + 2, y - r + 1, x + 1, y - 1], fill=STONE[2])
+    world.alpha_composite(outlined(lay))
+
+
+def workbench(world):
+    shadow(world, [466, 252, 516, 270])
+    lay, d = layer()
+    d.rectangle([468, 244, 512, 252], fill=WOOD[3])
+    d.rectangle([468, 252, 512, 256], fill=WOOD[1])
+    for lx in (470, 508):
+        d.rectangle([lx, 256, lx + 3, 266], fill=WOOD[1])
+    d.rectangle([476, 242, 488, 245], fill=IRON[2])        # saw
+    d.rectangle([496, 240, 500, 246], fill=IRON[1])        # tongs
+    world.alpha_composite(outlined(lay))
+
+
+def field(world):
+    lay, d = layer()
+    d.rectangle([16, 248, 126, 318], fill=DIRT[1])
+    for row, y in enumerate(range(252, 316, 9)):
+        d.rectangle([20, y, 122, y + 5], fill=DIRT[0])
+        d.line([20, y, 122, y], fill=DIRT[2])
+        for x in range(24, 120, 9):
+            if row < 3 or x > 70:
+                d.ellipse([x - 3, y - 3, x + 3, y + 2], fill=LEAF[2])
+                d.ellipse([x - 2, y - 2, x + 1, y], fill=LEAF[3])
+            else:
+                d.point((x, y - 1), fill=LEAF[3])
+                d.point((x + 1, y - 2), fill=LEAF[2])
+    for x in range(14, 130, 12):
+        for y in (244, 318):
+            d.rectangle([x, y - 6, x + 2, y + 1], fill=WOOD[2])
+    for y in (244, 318):
+        d.line([14, y - 4, 128, y - 4], fill=WOOD[3], width=2)
+    world.alpha_composite(outlined(lay))
+
+
+def tree_parts(cx, cy, r, seed):
+    """Return (trunk layer, canopy layer) for a round deciduous tree."""
+    rnd = random.Random(seed)
+    tr, td = layer()
+    td.rectangle([cx - 4, cy + r - 10, cx + 4, cy + r + 10], fill=WOOD[1])
+    td.rectangle([cx - 4, cy + r - 10, cx - 2, cy + r + 10], fill=WOOD[2])
+    td.polygon([(cx - 8, cy + r + 10), (cx, cy + r + 4), (cx + 8, cy + r + 10)], fill=WOOD[1])
+    cl, cd = layer()
+    blobs = [(cx + rnd.randint(-r // 2, r // 2), cy + rnd.randint(-r // 2, r // 3), rnd.randint(r // 2, r * 2 // 3))
+             for _ in range(9)]
+    for bx, by, br in blobs:
+        cd.ellipse([bx - br, by - br, bx + br, by + br], fill=LEAF[1])
+    for bx, by, br in blobs:
+        cd.ellipse([bx - br + 2, by - br + 1, bx + br - 4, by + br - 5], fill=LEAF[2])
+    for bx, by, br in blobs:
+        cd.ellipse([bx - br // 2 - 2, by - br // 2 - 2, bx, by - 1], fill=LEAF[3])
+    for _ in range(r * 6):
+        x, y = cx + rnd.randint(-r, r), cy + rnd.randint(-r, r)
+        if 0 <= x < WW and 0 <= y < WH and cl.getpixel((x, y))[3]:
+            cd.point((x, y), fill=rnd.choice([LEAF[0], LEAF[1], LEAF[3]]))
+    return outlined(tr), outlined(cl)
+
+
+def bush(d, x, y, rnd):
+    for _ in range(5):
+        bx, by, br = x + rnd.randint(-6, 6), y + rnd.randint(-4, 2), rnd.randint(4, 7)
+        d.ellipse([bx - br, by - br, bx + br, by + br], fill=LEAF[1])
+        d.ellipse([bx - br + 1, by - br, bx + br - 3, by + br - 4], fill=LEAF[2])
+        d.point((bx - 2, by - br + 2), fill=LEAF[3])
+
+
+def build_world():
+    world = ground()
+    field(world)
+    wall_h(world, 186, 252, 112)
+    wall_h(world, 372, 462, 112)
+    wall_v(world, 180, 112, 196)
+    wall_v(world, 180, 238, 312)
+    house(world)
+    lay, d = layer()
+    barrel(d, 244, 190)
+    barrel(d, 254, 196)
+    crate(d, 372, 198)
+    crate(d, 380, 190)
+    rnd = random.Random(3)
+    for bx, by in [(112, 196), (528, 112), (196, 140), (622, 220), (40, 220), (420, 116)]:
+        bush(d, bx, by, rnd)
+    # signpost
+    d.rectangle([126, 176, 128, 200], fill=WOOD[1])
+    d.polygon([(114, 178), (134, 178), (138, 182), (134, 186), (114, 186)], fill=WOOD[3])
+    world.alpha_composite(outlined(lay))
+    furnace(world)
+    anvil(world)
+    woodpile(world)
+    lay, d = layer()
+    stump(d, 296, 274)
+    for lx, ly in [(312, 286), (318, 290), (308, 292)]:
+        d.rectangle([lx - 4, ly - 3, lx + 4, ly + 1], fill=WOOD[3])
+        d.rectangle([lx - 4, ly - 3, lx - 2, ly + 1], fill=WOOD[1])
+    world.alpha_composite(outlined(lay))
+    workbench(world)
+    stonepile(world)
+    well(world)
+    wall_h(world, 186, 292, 312)
+    wall_h(world, 330, 432, 312)
+
+    canopy = Image.new("RGBA", (WW, WH), (0, 0, 0, 0))
+    trunks = []
+    for cx, cy, r, seed in [(392, 256, 26, 1), (60, 70, 24, 2), (214, 52, 20, 3),
+                            (596, 60, 26, 4), (40, 150, 18, 5), (620, 318, 22, 6)]:
+        shadow(world, [cx - r + 6, cy + r - 2, cx + r + 10, cy + r + 14], 80)
+        t, c = tree_parts(cx, cy, r, seed)
+        trunks.append((cy + r + 10, t))
+        canopy.alpha_composite(c)
+    return world, canopy, trunks
+
+
+# ------------------------------------------------------------------ characters
+FARMER = dict(hair=(110, 70, 40), tunic=(150, 104, 62), pants=(84, 70, 56), hat=True)
+WOODCUTTER = dict(hair=(70, 44, 30), tunic=(66, 108, 62), pants=(110, 84, 56), hood=(54, 86, 52))
+SMITH = dict(hair=(48, 34, 30), tunic=(122, 100, 88), pants=(70, 60, 58), apron=(96, 62, 40), beard=True)
+MAIDEN = dict(hair=(176, 92, 48), tunic=(156, 64, 64), pants=(156, 64, 64), dress=True,
+              kerchief=(236, 228, 208), apron=(228, 218, 196))
+CHILD = dict(hair=(232, 196, 104), tunic=(76, 108, 168), pants=(98, 78, 58), kid=True)
+
+CW, CH, OX, OY = 72, 64, 36, 54
+
+
+def person(look, facing, arm, tool=None, walk=None):
+    img, d = layer(CW, CH)
+    k = 0.8 if look.get("kid") else 1.0
+    fy = OY
+    lh, bh, hh, hw = round(6 * k), round(9 * k), round(12 * k), round(12 * k)
+    btop, htop = fy - lh - bh, fy - lh - bh - hh
+    t, tdk = look["tunic"], tuple(max(0, c - 34) for c in look["tunic"])
+    a = math.sin(walk * 2 * math.pi) if walk is not None else 0
+    lo = (round(a * 1.6), round(-a * 1.6))
+    # back arm
+    d.rectangle([OX - 7, btop + 1, OX - 5, btop + bh - 3], fill=tdk)
     if look.get("dress"):
-        for i, lx in enumerate((x - 2, x + 1)):
-            d.point((lx + offs[i], y - 1), fill=BLACK)
-        d.polygon([(x - 3, btop), (x + 2, btop), (x + 3, y - 2), (x - 4, y - 2)], fill=look["tunic"])
-        d.line([x - 2, btop + 2, x + 1, btop + 2], fill=look.get("apron", look["tunic"]))
-        if look.get("apron"):
-            d.rectangle([x - 1 + facing, btop + 2, x + facing, y - 3], fill=look["apron"])
+        for i, lx in enumerate((OX - 3, OX + 1)):
+            d.rectangle([lx + lo[i], fy - 2, lx + lo[i] + 2, fy], fill=OUT)
+        d.polygon([(OX - 5, btop), (OX + 4, btop), (OX + 7, fy - 2), (OX - 8, fy - 2)], fill=t)
+        d.polygon([(OX + 1, btop), (OX + 4, btop), (OX + 7, fy - 2), (OX + 2, fy - 2)], fill=tdk)
+        d.rectangle([OX - 2, btop + 4, OX + 3, fy - 4], fill=look["apron"])
     else:
-        for i, lx in enumerate((x - 2, x + 1)):
-            d.rectangle([lx + offs[i], y - leg_h, lx + offs[i], y - 1], fill=look["legs"])
-            d.point((lx + offs[i], y - 1), fill=BLACK)
-        d.rectangle([x - 3, btop, x + 2, y - leg_h - 1], fill=look["tunic"])
-        d.line([x - 3, btop + body_h - 2, x + 2, btop + body_h - 2], fill=look.get("belt", WOOD_D))
+        for i, lx in enumerate((OX - 4, OX + 1)):
+            lift = 1 if (walk is not None and (a > 0) == (i == 0)) else 0
+            d.rectangle([lx + lo[i], fy - lh, lx + lo[i] + 2, fy - lift], fill=look["pants"])
+            d.rectangle([lx + lo[i], fy - 1 - lift, lx + lo[i] + 3, fy - lift], fill=WOOD[0])
+        d.rectangle([OX - 5, btop, OX + 4, fy - lh], fill=t)
+        d.rectangle([OX + 2, btop, OX + 4, fy - lh], fill=tdk)
+        d.line([OX - 5, fy - lh - 2, OX + 4, fy - lh - 2], fill=WOOD[1])
+        d.point((OX, fy - lh - 2), fill=(220, 190, 90))
         if look.get("apron"):
-            d.rectangle([x - 1 + facing, btop + 1, x + facing, y - leg_h], fill=look["apron"])
-
-    htop = btop - 4
-    d.rectangle([x - 2, htop, x + 1, btop - 1], fill=SKIN)
-    d.line([x - 2, htop, x + 1, htop], fill=look["hair"])
-    back = x - 2 if facing > 0 else x + 1
-    d.line([back, htop, back, htop + 2], fill=look["hair"])
-    if look.get("hood"):
-        d.line([x - 3, htop - 1, x + 2, htop - 1], fill=look["hood"])
-        d.line([x - 2, htop - 2, x + 1, htop - 2], fill=look["hood"])
-        d.line([back - facing, htop - 1, back - facing, htop + 3], fill=look["hood"])
+            d.rectangle([OX - 3, btop + 2, OX + 3, fy - lh + 1], fill=look["apron"])
+    # head
+    d.rectangle([OX - hw // 2, htop, OX + hw // 2 - 1, btop], fill=SKIN[0])
+    d.rectangle([OX + hw // 2 - 3, htop + 2, OX + hw // 2 - 1, btop], fill=SKIN[1])
+    for px, py in [(OX - hw // 2, htop), (OX + hw // 2 - 1, htop)]:
+        d.point((px, py), fill=(0, 0, 0, 0))
+    d.rectangle([OX - hw // 2, htop, OX + hw // 2 - 1, htop + 3], fill=look["hair"])
+    d.rectangle([OX - hw // 2, htop, OX - hw // 2 + 2, htop + hh - 4], fill=look["hair"])
+    if look.get("dress"):
+        d.rectangle([OX - hw // 2 - 1, htop + 2, OX - hw // 2 + 1, btop + 6], fill=look["hair"])
+    ey = htop + hh // 2 + 1
+    d.rectangle([OX, ey, OX, ey + 1], fill=OUT)
+    d.rectangle([OX + 3, ey, OX + 3, ey + 1], fill=OUT)
+    d.point((OX + 4, ey + 3), fill=(214, 120, 110))
+    if look.get("beard"):
+        d.rectangle([OX - 2, ey + 2, OX + 5, btop + 2], fill=look["hair"])
+        d.line([OX, ey + 3, OX + 3, ey + 3], fill=SKIN[1])
     if look.get("hat"):
-        d.line([x - 4, htop - 1, x + 3, htop - 1], fill=look["hat"])
-        d.line([x - 2, htop - 3, x + 1, htop - 2], fill=look["hat"])
-        d.rectangle([x - 2, htop - 3, x + 1, htop - 2], fill=look["hat"])
-    d.point((x if facing > 0 else x - 1, htop + 2), fill=EYE)
-
-    sx, sy = (x if facing > 0 else x - 1), btop + 1
-    rad = math.radians(arm)
-    ln = 3 if small else 4
-    hx, hy = sx + round(ln * math.cos(rad)) * facing, sy + round(ln * math.sin(rad))
-    d.line([sx, sy, hx, hy], fill=look["tunic"])
-    ux, uy = math.cos(rad) * facing, math.sin(rad)
+        d.ellipse([OX - 10, htop - 3, OX + 9, htop + 3], fill=(220, 186, 96))
+        d.rectangle([OX - 5, htop - 7, OX + 4, htop], fill=(206, 170, 82))
+        d.line([OX - 5, htop - 1, OX + 4, htop - 1], fill=(160, 60, 50))
+    if look.get("hood"):
+        c = look["hood"]
+        d.rectangle([OX - hw // 2 - 1, htop - 2, OX + hw // 2, htop + 2], fill=c)
+        d.rectangle([OX - hw // 2 - 1, htop - 2, OX - hw // 2 + 2, btop + 1], fill=c)
+        d.polygon([(OX - hw // 2 - 1, htop - 2), (OX - hw // 2 - 5, htop + 4), (OX - hw // 2, htop + 4)], fill=c)
+    if look.get("kerchief"):
+        c = look["kerchief"]
+        d.rectangle([OX - hw // 2, htop - 1, OX + hw // 2 - 1, htop + 2], fill=c)
+        d.point((OX - hw // 2 - 1, htop + 3), fill=c)
+    # front arm + tool
+    sx, sy = OX + 2, btop + 2
+    r = math.radians(arm)
+    ux, uy = math.cos(r), math.sin(r)
+    al = 6 * k
+    hx, hy = sx + ux * al, sy + uy * al
     if tool == "hoe":
-        ex, ey = hx + ux * 7, hy + uy * 7
-        d.line([hx - ux * 4, hy - uy * 4, ex, ey], fill=WOOD)
-        px_, py_ = -uy * facing, ux * facing
-        d.line([ex, ey, ex + 3 * facing * abs(px_) * 0 + px_ * 0, ey + 3], fill=IRON)
+        ex, ey2 = hx + ux * 14, hy + uy * 14
+        d.line([hx - ux * 3, hy - uy * 3, ex, ey2], fill=WOOD[3], width=2)
+        d.line([ex, ey2, ex - uy * 5, ey2 + ux * 5], fill=IRON[2], width=3)
     elif tool == "axe":
-        ex, ey = hx + ux * 6, hy + uy * 6
-        d.line([hx - ux, hy - uy, ex, ey], fill=WOOD)
-        d.rectangle([round(ex) - 1, round(ey) - 1, round(ex) + 1, round(ey) + 1], fill=IRON)
-        d.point((round(ex + ux * 2), round(ey + uy * 2)), fill=WHITE)
+        ex, ey2 = hx + ux * 10, hy + uy * 10
+        d.line([hx - ux * 2, hy - uy * 2, ex, ey2], fill=WOOD[3], width=2)
+        px, py = -uy, ux
+        d.polygon([(ex - px * 2, ey2 - py * 2), (ex + px * 3 + ux * 2, ey2 + py * 3 + uy * 2),
+                   (ex + px * 3 - ux * 3, ey2 + py * 3 - uy * 3)], fill=IRON[2])
+        d.line([ex + px * 3 + ux * 2, ey2 + py * 3 + uy * 2, ex + px * 3 - ux * 3, ey2 + py * 3 - uy * 3],
+               fill=IRON[3])
     elif tool == "hammer":
-        ex, ey = hx + ux * 4, hy + uy * 4
-        d.line([hx, hy, ex, ey], fill=WOOD)
-        d.rectangle([round(ex) - 1, round(ey) - 1, round(ex) + 1, round(ey)], fill=IRON_D)
+        ex, ey2 = hx + ux * 8, hy + uy * 8
+        d.line([hx, hy, ex, ey2], fill=WOOD[3], width=2)
+        px, py = -uy, ux
+        d.line([ex - px * 3, ey2 - py * 3, ex + px * 3, ey2 + py * 3], fill=IRON[1], width=4)
     elif tool == "bucket":
-        d.rectangle([hx - 1, hy + 1, hx + 2, hy + 4], fill=WOOD)
-        d.line([hx - 1, hy + 2, hx + 2, hy + 2], fill=IRON_D)
-        d.line([hx, hy + 1, hx + 1, hy + 1], fill=(80, 140, 220))
-    d.point((hx, hy), fill=SKIN)
+        d.rectangle([hx - 4, hy + 2, hx + 4, hy + 10], fill=WOOD[2])
+        d.rectangle([hx + 1, hy + 2, hx + 4, hy + 10], fill=WOOD[1])
+        d.line([hx - 4, hy + 4, hx + 4, hy + 4], fill=IRON[1])
+        d.line([hx - 4, hy + 8, hx + 4, hy + 8], fill=IRON[1])
+        d.line([hx - 3, hy + 2, hx + 3, hy + 2], fill=WATER[2])
+        d.arc([hx - 4, hy - 1, hx + 4, hy + 5], 180, 360, fill=IRON[0])
+    d.line([sx, sy, hx, hy], fill=t, width=3)
+    d.rectangle([round(hx) - 1, round(hy) - 1, round(hx) + 1, round(hy) + 1], fill=SKIN[0])
+    if facing < 0:
+        img = ImageOps.mirror(img)
+    return outlined(img)
 
 
-def chicken(d, x, y, facing, t):
-    bob = int((t * 12) % 2)
-    d.rectangle([x - 2, y - 4 - bob, x + 1, y - 2 - bob], fill=WHITE)
-    hx = x + 2 if facing > 0 else x - 3
-    d.point((hx, y - 5 - bob), fill=WHITE)
-    d.point((hx, y - 6 - bob), fill=(220, 50, 50))
-    d.point((hx + facing, y - 5 - bob), fill=(250, 170, 40))
-    d.point((x - 3 * facing if facing > 0 else x + 2, y - 4 - bob), fill=(220, 220, 210))
+def chicken(t, facing, peck=False):
+    img, d = layer(16, 16)
+    bob = int(t * 10) % 2
+    p = 2 if peck and int(t * 3) % 2 else 0
+    d.ellipse([3, 6 - bob, 11, 12 - bob], fill=(244, 240, 228))
+    d.ellipse([3, 9 - bob, 9, 12 - bob], fill=(214, 206, 190))
+    d.rectangle([9, 4 - bob + p, 12, 8 - bob + p], fill=(244, 240, 228))
+    d.rectangle([10, 3 - bob + p, 11, 3 - bob + p], fill=(220, 50, 50))
+    d.point((13, 6 - bob + p), fill=(250, 170, 40))
+    d.point((11, 5 - bob + p), fill=OUT)
+    d.rectangle([2, 5 - bob, 4, 7 - bob], fill=(230, 226, 214))
     leg = int(t * 12) % 2
-    d.point((x - 1 + leg, y - 1), fill=(250, 170, 40))
-    d.point((x - leg, y - 1), fill=(250, 170, 40))
-
-
-def well(d):
-    d.rectangle([166, 124, 182, 134], fill=STONE)
-    for by in (126, 130):
-        for bx in range(166 + (by % 4), 182, 5):
-            d.line([bx, by, bx + 3, by], fill=STONE_D)
-    d.line([166, 124, 182, 124], fill=STONE_D)
-    for postx in (167, 181):
-        d.line([postx, 110, postx, 124], fill=WOOD_D)
-    d.polygon([(163, 112), (185, 112), (174, 104)], fill=THATCH)
-    d.line([168, 113, 180, 113], fill=WOOD_D)
-    d.line([174, 113, 174, 119], fill=(200, 190, 160))
-    d.rectangle([173, 119, 175, 121], fill=WOOD)
-
-
-# ---------------------------------------------------------------- scene
-FARMER = dict(hair=(110, 70, 40), tunic=(150, 110, 70), legs=(90, 80, 60), hat=(214, 180, 90))
-WOODCUTTER = dict(hair=(60, 40, 30), tunic=(70, 120, 70), legs=(110, 90, 60), hood=(60, 96, 60))
-SMITH = dict(hair=(30, 25, 25), tunic=(110, 90, 80), legs=(70, 60, 60), apron=(90, 60, 40))
-MAIDEN = dict(hair=(200, 120, 60), tunic=(160, 70, 70), dress=True, hood=(236, 230, 210), apron=(230, 222, 200))
-CHILD = dict(hair=(230, 200, 110), tunic=(80, 110, 170), legs=(100, 80, 60))
+    d.line([6 + leg, 12, 6 + leg, 14], fill=(250, 170, 40))
+    d.line([8 - leg, 12, 8 - leg, 14], fill=(250, 170, 40))
+    if facing < 0:
+        img = ImageOps.mirror(img)
+    return outlined(img)
 
 
 def swing(p, rise, up, down):
-    """Tool swing cycle: slow raise for `rise` of the cycle, fast strike after."""
     if p < rise:
         return down + (up - down) * ease(p / rise)
-    s = min(1, (p - rise) / 0.15)
-    return up + (down - up) * s
+    return up + (down - up) * min(1, (p - rise) / 0.15)
 
 
-def frame(bg, chimneys, i, font):
+# ------------------------------------------------------------------ frame
+def puff(d, x, y, r, a):
+    d.ellipse([x - r, y - r, x + r, y + r], fill=(150, 146, 140, a))
+    d.ellipse([x - r + 1, y - r, x + r - 1, y + r - 2], fill=(214, 210, 204, a))
+    d.ellipse([x - r + 2, y - r + 1, x, y - 1], fill=(240, 238, 232, a))
+
+
+def frame(world, canopy, trunks, i, font):
     t = i / FPS
-    img = bg.copy()
-    d = ImageDraw.Draw(img)
+    img = world.copy()
+    fx, fd = layer()
 
-    # drifting clouds and birds
-    for cx0, cy, spd in [(40, 20, 4), (170, 34, 2.5), (290, 14, 3.2)]:
-        cx = (cx0 + t * spd) % (W + 60) - 30
-        for ox, oy, r in [(0, 0, 6), (7, -3, 7), (14, 0, 6), (7, 2, 5)]:
-            d.ellipse([cx + ox - r, cy + oy - r, cx + ox + r, cy + oy + r // 2], fill=WHITE)
-    for bx0, by in [(0, 40), (12, 46), (-10, 44)]:
-        bx = (bx0 + t * 18) % (W + 40) - 20
-        flap = 1 if int(t * 6 + bx0) % 2 else -1
-        by2 = by + round(2 * math.sin(t * 2 + bx0))
-        d.point((bx, by2), fill=BLACK)
-        d.point((bx - 1, by2 + flap), fill=BLACK)
-        d.point((bx + 1, by2 + flap), fill=BLACK)
-
-    # castle flag
-    for k in range(5):
-        fy = 35 + round(math.sin(t * 6 - k * 0.9))
-        d.line([261 + k, fy, 261 + k, fy + 3], fill=(210, 40, 50))
-
-    # chimney smoke
-    for n, (cx, cy) in enumerate(chimneys):
-        for k in range(7):
-            age = (t * 0.6 + k / 7 + n * 0.13) % 1
-            sx = cx + round(math.sin(age * 5 + n + k) * 2 + age * 8)
-            sy = cy - 2 - round(age * 26)
-            r = 1 + round(age * 2)
-            g = 170 + round(age * 60)
-            d.ellipse([sx - r, sy - r, sx + r, sy + r], fill=(g, g, g + 6))
-
-    # forge fire
-    for k in range(10):
-        fx = 230 + (k * 7 + int(t * 20)) % 13
-        fh = 2 + (k * 13 + int(t * 24)) % 4
-        d.line([fx, 113, fx, 113 - fh], fill=FIRE[(k + int(t * 10)) % 3])
-    d.rectangle([228, 113, 244, 114], fill=FIRE[2])
+    # forge fire, glow and smoke
+    for k in range(12):
+        x = 482 + (k * 5 + int(t * 18)) % 17
+        h = 3 + (k * 7 + int(t * 22)) % 6
+        fd.line([x, 173, x, 173 - h], fill=FIRE[(k + int(t * 12)) % 3])
+    glow, gd = layer()
+    gl = 60 + round(20 * math.sin(t * 9))
+    gd.ellipse([466, 168, 514, 192], fill=(255, 150, 50, gl))
+    img.alpha_composite(glow)
+    for n, (cx, cy) in enumerate([(344, 20), (490, 106)]):
+        for k in range(8):
+            age = (t * 0.45 + k / 8 + n * 0.3) % 1
+            sx = cx + round(math.sin(age * 6 + k) * 2 + age * 18)
+            sy = cy - round(age * 44)
+            puff(fd, sx, sy, 2 + round(age * 4), round(230 * (1 - age ** 2)))
 
     sprites = []
-    # 1. farmer hoeing the field
+
+    # 1. farmer hoeing the cabbage field
     p = (t / 1.3) % 1
-    sprites.append((168, lambda: peasant(d, 76, 168, FARMER, 1, None, swing(p, 0.6, -60, 70), "hoe")))
-    if 0.7 < p < 0.95:
-        for k in range(4):
-            q = (p - 0.7) / 0.25
-            d.point((86 + k * 2 - 3, 170 - round(q * (3 + k) * (1 - q) * 3)), fill=SOIL_D)
+    sprites.append((300, 80, 300, person(FARMER, 1, swing(p, 0.6, -75, 48), "hoe")))
+    if 0.68 < p < 0.98:
+        q = (p - 0.68) / 0.3
+        for k, (vx, vy) in enumerate([(-5, -7), (4, -8), (8, -4), (-2, -9)]):
+            fd.point((98 + round(vx * q * 1.6), 304 + round(vy * q * 1.6 + 14 * q * q)), fill=DIRT[0])
 
     # 2. woodcutter at the chopping block
     p = (t / 1.1 + 0.3) % 1
-    sprites.append((134, lambda: peasant(d, 198, 135, WOODCUTTER, 1, None, swing(p, 0.62, -120, 40), "axe")))
+    sprites.append((274, 283, 274, person(WOODCUTTER, 1, swing(p, 0.62, -130, 38), "axe")))
     if 0.72 < p < 0.98:
         q = (p - 0.72) / 0.26
-        for k, (vx, vy) in enumerate([(-4, -6), (5, -7), (7, -3), (-2, -8)]):
-            d.point((206 + round(vx * q * 2), 128 + round(vy * q * 2 + 14 * q * q)), fill=(214, 176, 112))
+        for k, (vx, vy) in enumerate([(-6, -7), (6, -8), (9, -3), (-3, -9), (3, -10)]):
+            fd.rectangle([298 + round(vx * q * 2), 266 + round(vy * q * 2 + 18 * q * q),
+                          299 + round(vx * q * 2), 266 + round(vy * q * 2 + 18 * q * q)], fill=WOOD[3])
 
-    # 3. blacksmith at the anvil
+    # 3. blacksmith hammering at the anvil
     p = (t / 0.7) % 1
-    sprites.append((130, lambda: peasant(d, 250, 130, SMITH, 1, None, swing(p, 0.6, -90, 15), "hammer")))
+    sprites.append((188, 423, 188, person(SMITH, 1, swing(p, 0.6, -105, 22), "hammer")))
     if 0.72 < p < 1:
         q = (p - 0.72) / 0.28
         rr = random.Random(int(t / 0.7))
-        for k in range(6):
-            ang = rr.uniform(-2.8, -0.3)
-            dist = rr.uniform(4, 10) * q
-            d.point((257 + round(math.cos(ang) * dist), 119 + round(math.sin(ang) * dist + 6 * q * q)),
-                    fill=FIRE[k % 2])
+        for k in range(9):
+            ang = rr.uniform(-3.0, -0.2)
+            dist = rr.uniform(5, 14) * q
+            fd.point((438 + round(math.cos(ang) * dist), 177 + round(math.sin(ang) * dist + 8 * q * q)),
+                     fill=FIRE[k % 2])
 
-    # 4. maiden carrying water along the path
-    cyc = (t / 8) % 1
-    tri = cyc * 2 if cyc < 0.5 else 2 - cyc * 2
-    mx = round(36 + 112 * ease(tri))
-    mf = 1 if cyc < 0.5 else -1
-    sprites.append((145, lambda: peasant(d, mx, 145, MAIDEN, mf, t * 2.2, 80, "bucket")))
+    # 4. maiden carrying water along the road toward the well
+    mx = round(220 + 345 * (t / DUR))
+    sprites.append((222, mx, 222, person(MAIDEN, 1, 82, "bucket", walk=t * 1.8)))
 
-    # 5. child chasing a chicken around the well
-    th = t * 1.5
-    kx, ky = round(174 + 26 * math.cos(th)), round(140 + 8 * math.sin(th))
-    hx_, hy_ = round(174 + 26 * math.cos(th + 0.7)), round(140 + 8 * math.sin(th + 0.7))
+    # 5. child chasing a chicken around the big tree
+    th = t * 1.3
+    kx, ky = 392 + 38 * math.cos(th), 290 + 12 * math.sin(th)
+    cx, cy = 392 + 38 * math.cos(th + 0.75), 290 + 12 * math.sin(th + 0.75)
     kf = -1 if math.sin(th) > 0 else 1
-    hf = -1 if math.sin(th + 0.7) > 0 else 1
-    sprites.append((ky, lambda: peasant(d, kx, ky, CHILD, kf, t * 4, -40 + 50 * math.sin(t * 16), None, small=True)))
-    sprites.append((hy_, lambda: chicken(d, hx_, hy_, hf, t)))
-    sprites.append((134.5, lambda: well(d)))
+    cf = -1 if math.sin(th + 0.75) > 0 else 1
+    sprites.append((ky, round(kx), round(ky), person(CHILD, kf, -30 + 60 * math.sin(t * 14), walk=t * 3.5)))
+    sprites.append((cy, round(cx), round(cy), ("chicken", chicken(t, cf))))
+    sprites.append((248, 540, 248, ("chicken", chicken(t, -1, peck=True))))
+    for base, trunk in trunks:
+        sprites.append((base, None, None, trunk))
 
-    for _, fn in sorted(sprites, key=lambda s: s[0]):
-        fn()
+    for _, x, y, spr in sorted(sprites, key=lambda s: s[0]):
+        if x is None:
+            img.alpha_composite(spr)
+        elif isinstance(spr, tuple):
+            shadow(img, [x - 6, y - 2, x + 6, y + 2], 70)
+            img.alpha_composite(spr[1], (x - 8, y - 14))
+        else:
+            shadow(img, [x - 8, y - 3, x + 8, y + 2], 80)
+            img.alpha_composite(spr, (x - OX, y - OY))
+    img.alpha_composite(fx)
+    img.alpha_composite(canopy)
 
-    # title card, slides in then out
-    if t < 4.2:
-        slide = min(1, t / 0.6) if t < 3.6 else 1 - (t - 3.6) / 0.6
-        title_overlay(img, font, round(-40 + 46 * ease(max(0, slide))))
-    if t > 8.6:
-        title_overlay(img, font, None, sub_only="~ Anno Domini 1347 ~")
-    return img.resize((W * SCALE, H * SCALE), Image.NEAREST)
+    # butterflies
+    bd = ImageDraw.Draw(img)
+    for n, (bx0, by0) in enumerate([(240, 150), (520, 200), (90, 230)]):
+        bx = bx0 + 30 * math.sin(t * 0.7 + n * 2) + 12 * math.sin(t * 2.1 + n)
+        by = by0 + 14 * math.sin(t * 1.1 + n) + 4 * math.sin(t * 5 + n)
+        wing = int(t * 10 + n) % 2
+        col = [(250, 244, 220), (250, 210, 90), (170, 200, 250)][n]
+        bd.point((round(bx) - 1, round(by) - wing), fill=col)
+        bd.point((round(bx) + 1, round(by) - wing), fill=col)
+        bd.point((round(bx), round(by)), fill=OUT)
+
+    # slow camera pan across the village
+    pp = ease(t / DUR)
+    cam_x, cam_y = round(160 * pp), round(30 + 30 * pp)
+    view = img.crop((cam_x, cam_y, cam_x + VW, cam_y + VH)).convert("RGB")
+    if t < 4.4:
+        s = ease(t / 0.6) if t < 3.8 else 1 - ease((t - 3.8) / 0.6)
+        banner(view, font, "Village Life", round(-30 + 38 * s), "five peasants at work")
+    if t > 8.4:
+        banner(view, font, "Anno Domini 1347", round(-30 + 38 * ease((t - 8.4) / 0.6)))
+    return view.resize((VW * SCALE, VH * SCALE), Image.NEAREST)
 
 
-def title_overlay(img, font, y, sub_only=None):
-    if sub_only:
-        lay = Image.new("RGBA", (W, 16), (0, 0, 0, 0))
-        ld = ImageDraw.Draw(lay)
-        tw = ld.textlength(sub_only, font=font)
-        ld.text(((W - tw) // 2 + 1, 3), sub_only, font=font, fill=(40, 24, 10, 255))
-        ld.text(((W - tw) // 2, 2), sub_only, font=font, fill=(255, 236, 160, 255))
-        img.paste(lay, (0, 6), lay)
-        return
-    text = "VILLAGE LIFE"
-    small = Image.new("RGBA", (80, 12), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(small)
-    sd.text((0, 0), text, font=font, fill=(255, 236, 160, 255))
-    big = small.resize((160, 24), Image.NEAREST)
-    shadow = Image.new("RGBA", big.size, (60, 34, 14, 255))
-    shadow.putalpha(big.getchannel("A"))
-    bx = (W - 146) // 2
-    plate = ImageDraw.Draw(img)
-    plate.rectangle([bx - 8, y - 4, bx + 152, y + 32], fill=(92, 58, 32), outline=(52, 30, 16))
-    plate.rectangle([bx - 6, y - 2, bx + 150, y + 30], outline=(200, 150, 80))
-    img.paste(shadow, (bx + 2, y + 2), shadow)
-    img.paste(big, (bx, y), big)
-    sub = "five peasants at work"
-    tw = plate.textlength(sub, font=font)
-    plate.text(((W - tw) // 2, y + 20), sub, font=font, fill=(240, 220, 180))
+def banner(img, font, text, y, sub=None):
+    small = Image.new("RGBA", (120, 12), (0, 0, 0, 0))
+    ImageDraw.Draw(small).text((0, 0), text, font=font, fill=(236, 228, 210, 255))
+    tw = round(ImageDraw.Draw(small).textlength(text, font=font)) * 2
+    big = small.resize((240, 24), Image.NEAREST)
+    w = tw + 40
+    x = (VW - w) // 2
+    d = ImageDraw.Draw(img)
+    d.rectangle([x, y, x + w, y + 26], fill=OUT)
+    d.rectangle([x + 1, y + 1, x + w - 1, y + 25], fill=(64, 70, 86))
+    d.line([x + 2, y + 2, x + w - 2, y + 2], fill=(132, 140, 156))
+    d.line([x + 2, y + 24, x + w - 2, y + 24], fill=(38, 42, 54))
+    for ex in (x - 6, x + w - 2):
+        d.polygon([(ex, y + 4), (ex + 8, y + 2), (ex + 8, y + 24), (ex, y + 22)], fill=(150, 116, 60), outline=OUT)
+        d.line([ex + 2, y + 6, ex + 2, y + 20], fill=(214, 180, 100))
+    sh = Image.new("RGBA", big.size, OUT + (255,))
+    sh.putalpha(big.getchannel("A"))
+    img.paste(sh, (x + 21, y + 3), sh)
+    img.paste(big, (x + 20, y + 2), big)
+    if sub:
+        sw = d.textlength(sub, font=font)
+        sx = round((VW - sw) / 2)
+        for ox, oy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            d.text((sx + ox, y + 30 + oy), sub, font=font, fill=OUT)
+        d.text((sx, y + 30), sub, font=font, fill=(240, 226, 180))
 
 
 def main():
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
     font = ImageFont.load_default_imagefont()
-    bg, chimneys = background()
+    world, canopy, trunks = build_world()
     for i in range(N):
-        frame(bg, chimneys, i, font).save(os.path.join(out, f"f{i:04d}.png"))
+        frame(world, canopy, trunks, i, font).save(os.path.join(out, f"f{i:04d}.png"))
 
 
 if __name__ == "__main__":
